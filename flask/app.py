@@ -1,49 +1,37 @@
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, request, jsonify
+import requests
+from bs4 import BeautifulSoup
+from transformers import pipeline
 
 app = Flask(__name__)
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 
-# A simple in-memory structure to store tasks
-tasks = []
+@app.route("/summarize", methods=["POST"])
+def summarize():
+    data = request.get_json()
+    urls = data.get("urls", [])
 
-@app.route('/', methods=['GET'])
-def home():
-    # Display existing tasks and a form to add a new task
-    html = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Todo List</title>
-</head>
-<body>
-    <h1>Todo List</h1>
-    <form action="/add" method="POST">
-        <input type="text" name="task" placeholder="Enter a new task">
-        <input type="submit" value="Add Task">
-    </form>
-    <ul>
-        {% for task in tasks %}
-        <li>{{ task }} <a href="/delete/{{ loop.index0 }}">x</a></li>
-        {% endfor %}
-    </ul>
-</body>
-</html>
-'''
-    return render_template_string(html, tasks=tasks)
+    if not urls:
+        return jsonify({"summary": "No URLs provided."}), 400
 
-@app.route('/add', methods=['POST'])
-def add_task():
-    # Add a new task from the form data
-    task = request.form.get('task')
-    if task:
-        tasks.append(task)
-    return home()
+    combined_text = ""
+    for url in urls:
+        try:
+            print(f"🔗 Fetching: {url}")
+            resp = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(resp.text, "html.parser")
+            paragraphs = soup.find_all("p")
+            text = " ".join([p.get_text() for p in paragraphs])
+            combined_text += text[:30000] + "\n"
+        except Exception as e:
+            print(f"⚠️ Failed to fetch {url}: {e}")
 
-@app.route('/delete/<int:index>', methods=['GET'])
-def delete_task(index):
-    # Delete a task based on its index
-    if index < len(tasks):
-        tasks.pop(index)
-    return home()
+    if not combined_text:
+        return jsonify({"summary": "No valid content found."}), 200
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    print("📄 Summarizing...")
+    summary = summarizer(combined_text, max_length=3000, min_length=1000, do_sample=False)[0]['summary_text']
+    return jsonify({"summary": summary}), 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
